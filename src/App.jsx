@@ -99,12 +99,155 @@ function FreshnessRing({ hours }) {
   );
 }
 
+// Real speech-to-text, backed by the browser's SpeechRecognition API.
+// Only one recording happens at a time app-wide; `activeTarget` says which
+// widget currently owns the mic so the right one shows the live transcript.
+function useSpeechEngine() {
+  const recognitionRef = useRef(null);
+  const [isListening, setIsListening] = useState(false);
+  const [interim, setInterim] = useState("");
+  const [error, setError] = useState(null);
+  const [activeTarget, setActiveTarget] = useState(null);
+  const supported = typeof window !== "undefined" && !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+
+  useEffect(() => () => {
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch (e) { /* already stopped */ }
+    }
+  }, []);
+
+  function start(target, onDone) {
+    const SR = typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
+    if (!SR) {
+      setError("Voice input isn't supported in this browser — try Chrome or Edge, or type instead.");
+      return;
+    }
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch (e) { /* already stopped */ }
+    }
+    setError(null);
+    const recognition = new SR();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = (typeof navigator !== "undefined" && navigator.language) || "en-US";
+    let finalText = "";
+    recognition.onresult = (e) => {
+      let interimText = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const chunk = e.results[i][0].transcript;
+        if (e.results[i].isFinal) finalText += chunk + " ";
+        else interimText += chunk;
+      }
+      setInterim((finalText + interimText).trim());
+    };
+    recognition.onerror = (e) => {
+      if (e.error !== "no-speech" && e.error !== "aborted") {
+        setError(e.error === "not-allowed" ? "Microphone access was denied." : `Voice input error: ${e.error}`);
+      }
+    };
+    recognition.onend = () => {
+      setIsListening(false);
+      setActiveTarget(null);
+      onDone && onDone(finalText.trim());
+    };
+    recognitionRef.current = recognition;
+    setInterim("");
+    setActiveTarget(target);
+    setIsListening(true);
+    try {
+      recognition.start();
+    } catch (e) {
+      setIsListening(false);
+      setActiveTarget(null);
+      setError(String((e && e.message) || e));
+    }
+  }
+
+  function stop() {
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch (e) { /* already stopped */ }
+    }
+  }
+
+  return { start, stop, isListening, interim, error, activeTarget, supported };
+}
+
+// First word capitalized short label pulled from a spoken transcript, used as
+// a starting point for a title field the person can still edit.
+function titleFromTranscript(text) {
+  const words = text.trim().split(/\s+/).slice(0, 6).join(" ");
+  if (!words) return "New angle";
+  const capped = words.charAt(0).toUpperCase() + words.slice(1);
+  return text.trim().split(/\s+/).length > 6 ? capped + "\u2026" : capped;
+}
+
+// Shared recording widget: idle (tap to start) -> listening (live transcript
+// + stop) -> the caller then owns the "captured" state and shows the result.
+function VoiceRecorder({ engine, target, onResult, background }) {
+  const isThis = engine.activeTarget === target;
+  const isListening = isThis && engine.isListening;
+
+  if (!engine.supported) {
+    return (
+      <p className="text-xs opacity-60 italic flex items-start gap-1.5">
+        <Info size={12} className="shrink-0 mt-0.5" /> Voice input isn't supported in this browser — try Chrome or Edge, or type instead.
+      </p>
+    );
+  }
+
+  if (isListening) {
+    return (
+      <div className="rounded-lg p-3 flex items-center gap-3" style={{ background: background || PAPER }}>
+        <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 animate-pulse" style={{ background: CLAY }}>
+          <Mic size={14} color="#fff" />
+        </div>
+        <p className="flex-1 min-w-0 text-xs opacity-70 truncate">{engine.interim || "Listening\u2026"}</p>
+        <button
+          onClick={() => engine.stop()}
+          className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-full shrink-0"
+          style={{ background: MOSS, color: "#fff" }}
+        >
+          <Sparkles size={11} /> Stop &amp; fill in
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="rounded-lg p-3 flex items-center gap-3" style={{ background: background || PAPER }}>
+        <button
+          onClick={() => engine.start(target, onResult)}
+          className="w-8 h-8 rounded-full flex items-center justify-center shrink-0"
+          style={{ background: CLAY }}
+          aria-label="Start recording"
+        >
+          <Mic size={14} color="#fff" />
+        </button>
+        <p className="flex-1 min-w-0 text-xs opacity-60">Tap the mic to start speaking</p>
+      </div>
+      {engine.error && <p className="text-xs mt-1.5" style={{ color: CLAY }}>{engine.error}</p>}
+    </div>
+  );
+}
+
 function Afterglow() {
   const [step, setStep] = useState(1);
   const [captureMethod, setCaptureMethod] = useState("voice");
+  const speech = useSpeechEngine();
   const [cardScanned, setCardScanned] = useState(false);
   const [cardVoiceCaptured, setCardVoiceCaptured] = useState(false);
+  const [cardVoiceTranscript, setCardVoiceTranscript] = useState("");
+  const [cardCameraOn, setCardCameraOn] = useState(false);
+  const [cardImage, setCardImage] = useState(null);
+  const [cardOcrLoading, setCardOcrLoading] = useState(false);
+  const [cardOcrError, setCardOcrError] = useState(null);
+  const [cardFields, setCardFields] = useState({ name: "", title: "", company: "", phone: "", email: "" });
+  const cardVideoRef = useRef(null);
+  const cardCanvasRef = useRef(null);
+  const cardStreamRef = useRef(null);
   const [transcribed, setTranscribed] = useState(false);
+  const [captureTranscript, setCaptureTranscript] = useState("");
   const [selectedAngle, setSelectedAngle] = useState(null);
   const [platform, setPlatform] = useState("whatsapp");
   const [search, setSearch] = useState("");
@@ -137,6 +280,111 @@ function Afterglow() {
     load();
     return () => { cancelled = true; };
   }, []);
+
+  // Attach the live camera stream once the <video> element exists, and make
+  // sure the camera always gets released — on stop, tab switch, or unmount.
+  useEffect(() => {
+    if (cardCameraOn && cardVideoRef.current && cardStreamRef.current) {
+      cardVideoRef.current.srcObject = cardStreamRef.current;
+      cardVideoRef.current.play().catch(() => {});
+    }
+  }, [cardCameraOn]);
+  useEffect(() => () => {
+    cardStreamRef.current?.getTracks().forEach((t) => t.stop());
+  }, []);
+
+  async function startCardCamera() {
+    setCardOcrError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+      cardStreamRef.current = stream;
+      setCardCameraOn(true);
+    } catch (e) {
+      setCardOcrError("Couldn't access the camera \u2014 check your browser's camera permission, or type the details in manually below.");
+    }
+  }
+
+  function stopCardCamera() {
+    cardStreamRef.current?.getTracks().forEach((t) => t.stop());
+    cardStreamRef.current = null;
+    setCardCameraOn(false);
+  }
+
+  // Tesseract.js is loaded on demand from a CDN so card scanning works
+  // without any build-step changes; it's cached on window after first load.
+  async function loadTesseract() {
+    if (window.Tesseract) return window.Tesseract;
+    await new Promise((resolve, reject) => {
+      const existing = document.querySelector("script[data-tesseract]");
+      if (existing) {
+        existing.addEventListener("load", resolve);
+        existing.addEventListener("error", reject);
+        return;
+      }
+      const script = document.createElement("script");
+      script.src = "https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.5/tesseract.min.js";
+      script.dataset.tesseract = "true";
+      script.onload = resolve;
+      script.onerror = reject;
+      document.head.appendChild(script);
+    });
+    return window.Tesseract;
+  }
+
+  // Heuristic field-guessing from raw OCR text — business cards have no
+  // consistent layout, so this is a best-effort starting point; every field
+  // stays directly editable since OCR on cards is never perfectly reliable.
+  function parseCardText(raw) {
+    const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
+    const emailMatch = raw.match(/[\w.+-]+@[\w-]+\.[\w.-]+/);
+    const phoneMatch = raw.match(/(\+?\d[\d\s().-]{7,}\d)/);
+    const email = emailMatch ? emailMatch[0] : "";
+    const phone = phoneMatch ? phoneMatch[0].trim() : "";
+
+    const remaining = lines.filter((l) => l !== email && l !== phone && !l.includes("@") && !/\d{4,}/.test(l));
+    const companyKeywords = /(inc\.?|llc|ltd\.?|co\.?|corp\.?|group|studio|labs?|company|partners)/i;
+    const companyLine = remaining.find((l) => companyKeywords.test(l)) || "";
+    const nameLine = remaining.find((l) => /^[A-Z][a-zA-Z'.-]+(?:\s[A-Z][a-zA-Z'.-]+){1,2}$/.test(l)) || remaining[0] || "";
+    const titleLine = remaining.find((l) => l !== nameLine && l !== companyLine) || "";
+
+    return { name: nameLine, title: titleLine, company: companyLine, phone, email };
+  }
+
+  async function captureAndScanCard() {
+    const video = cardVideoRef.current;
+    if (!video) return;
+    const canvas = cardCanvasRef.current || document.createElement("canvas");
+    cardCanvasRef.current = canvas;
+    canvas.width = video.videoWidth || 1280;
+    canvas.height = video.videoHeight || 720;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+    setCardImage(dataUrl);
+    stopCardCamera();
+    setCardOcrLoading(true);
+    setCardOcrError(null);
+    try {
+      const Tesseract = await loadTesseract();
+      const { data } = await Tesseract.recognize(dataUrl, "eng");
+      setCardFields(parseCardText(data.text || ""));
+      setCardScanned(true);
+    } catch (e) {
+      console.error("Card OCR failed:", e);
+      setCardOcrError("Couldn't read the card automatically \u2014 enter the details in manually below.");
+      setCardScanned(true);
+    } finally {
+      setCardOcrLoading(false);
+    }
+  }
+
+  function retakeCard() {
+    setCardImage(null);
+    setCardScanned(false);
+    setCardOcrError(null);
+    setCardFields({ name: "", title: "", company: "", phone: "", email: "" });
+    startCardCamera();
+  }
 
   function setContacts(updater) {
     setContactsRaw((prev) => {
@@ -362,10 +610,6 @@ function Afterglow() {
     setTodoVoiceCaptured(false);
     setTodoChannel("message");
   }
-  function fillTodoFromVoice() {
-    // TODO: wire up real speech-to-text transcription here.
-    setTodoVoiceCaptured(true);
-  }
   function saveTodo(contactName) {
     if (!todoDraft.trim()) { setAddingTodoFor(null); return; }
     setContacts((list) => list.map((c) => c.name !== contactName ? c : {
@@ -380,10 +624,6 @@ function Afterglow() {
     setMomentDraft({ dateISO: new Date().toISOString().slice(0, 10), place: "", note: "" });
     setMomentMode("text");
     setMomentVoiceCaptured(false);
-  }
-  function fillMomentFromVoice() {
-    // TODO: wire up real speech-to-text transcription here.
-    setMomentVoiceCaptured(true);
   }
   function saveMoment(contactName) {
     if (!momentDraft.place.trim() && !momentDraft.note.trim()) { setAddingMomentFor(null); return; }
@@ -403,10 +643,6 @@ function Afterglow() {
     setDetailDraft("");
     setDetailMode("voice");
     setDetailVoiceCaptured(false);
-  }
-  function fillDetailFromVoice() {
-    // TODO: wire up real speech-to-text transcription here.
-    setDetailVoiceCaptured(true);
   }
   function saveDetail(contactName) {
     const note = detailDraft.trim();
@@ -449,10 +685,6 @@ function Afterglow() {
     setOwnSuggestionMode("voice");
     setOwnSuggestionVoiceCaptured(false);
   }
-  function fillOwnSuggestionFromVoice() {
-    // TODO: wire up real speech-to-text transcription here.
-    setOwnSuggestionVoiceCaptured(true);
-  }
   function saveOwnSuggestion() {
     const text = ownSuggestionDraft.trim();
     if (!text) { setAddingOwnSuggestion(false); return; }
@@ -469,10 +701,6 @@ function Afterglow() {
     setInputMode("text");
     setVoiceCaptured(false);
   }
-  function fillFromVoice() {
-    // TODO: wire up real speech-to-text transcription here.
-    setVoiceCaptured(true);
-  }
   function saveEdit(id) {
     setAngleList((list) => list.map((a) => (a.id === id ? { ...a, ...draft, source: a.source === "ai" ? "edited" : a.source } : a)));
     setEditingId(null);
@@ -482,10 +710,6 @@ function Afterglow() {
     setContextDraft("");
     setContextMode("voice");
     setContextVoiceCaptured(false);
-  }
-  function fillContextFromVoice() {
-    // TODO: wire up real speech-to-text transcription here.
-    setContextVoiceCaptured(true);
   }
   function deriveAngleFromContext(note) {
     const trimmed = note.trim();
@@ -661,7 +885,7 @@ function Afterglow() {
               ].map((m) => (
                 <button
                   key={m.id}
-                  onClick={() => { setCaptureMethod(m.id); setTranscribed(false); setCardScanned(false); setCardVoiceCaptured(false); }}
+                  onClick={() => { setCaptureMethod(m.id); setTranscribed(false); setCaptureTranscript(""); setCardScanned(false); setCardVoiceCaptured(false); setCardVoiceTranscript(""); setCardImage(null); setCardOcrError(null); if (cardCameraOn) stopCardCamera(); }}
                   className="flex items-center gap-2 px-4 py-3 rounded-xl text-sm font-medium"
                   style={{
                     background: captureMethod === m.id ? OCHRE : "#fff",
@@ -676,28 +900,24 @@ function Afterglow() {
 
             {captureMethod === "voice" && (
               <div className="rounded-2xl p-6" style={{ background: "#fff", border: `1px solid ${SAND}` }}>
-                <div className="flex items-center gap-4 mb-4">
-                  <div className="w-12 h-12 rounded-full flex items-center justify-center" style={{ background: CLAY }}>
-                    <Mic size={20} color="#fff" />
-                  </div>
-                  <div className="flex items-end gap-1 h-8">
-                    {[6,14,9,20,12,17,7,15,10,5].map((h,i) => (
-                      <div key={i} style={{ width: 3, height: h, background: MOSS, borderRadius: 2 }} />
-                    ))}
-                  </div>
-                  <span className="font-mono text-xs opacity-60 ml-auto">0:24</span>
-                </div>
                 {!transcribed ? (
-                  <button
-                    onClick={() => setTranscribed(true)}
-                    className="text-sm font-medium px-4 py-2 rounded-lg flex items-center gap-2"
-                    style={{ background: MOSS, color: "#fff" }}
-                  >
-                    <Sparkles size={14} /> Transcribe &amp; extract
-                  </button>
+                  <VoiceRecorder
+                    engine={speech}
+                    target="capture"
+                    onResult={(text) => { setCaptureTranscript(text); setTranscribed(true); }}
+                  />
                 ) : (
-                  <div className="font-mono text-xs leading-relaxed p-4 rounded-lg opacity-60 italic" style={{ background: PAPER }}>
-                    Transcription will appear here once speech-to-text is connected.
+                  <div>
+                    <div className="font-mono text-xs leading-relaxed p-4 rounded-lg" style={{ background: PAPER }}>
+                      {captureTranscript || "No speech was detected \u2014 try recording again, or type it in instead."}
+                    </div>
+                    <button
+                      onClick={() => { setTranscribed(false); setCaptureTranscript(""); }}
+                      className="mt-3 text-xs font-medium px-3 py-1.5 rounded-full flex items-center gap-1.5"
+                      style={{ border: `1px solid ${SAND}` }}
+                    >
+                      <RefreshCw size={12} /> Record again
+                    </button>
                   </div>
                 )}
               </div>
@@ -706,64 +926,105 @@ function Afterglow() {
             {captureMethod === "card" && (
               <div className="rounded-2xl p-6" style={{ background: "#fff", border: `1px solid ${SAND}` }}>
                 {!cardScanned ? (
-                  <div className="flex flex-col items-center justify-center gap-3 text-center" style={{ minHeight: 160 }}>
-                    <ScanLine size={28} color={MOSS} />
-                    <p className="text-sm opacity-70">Point your camera at the card — name, title, company, and contact details are lifted automatically. Add a voice note after for context the card can't hold.</p>
-                    <button
-                      onClick={() => setCardScanned(true)}
-                      className="mt-2 text-sm font-medium px-4 py-2 rounded-lg flex items-center gap-2"
-                      style={{ background: MOSS, color: "#fff" }}
-                    >
-                      <ScanLine size={14} /> Scan card
-                    </button>
+                  <div>
+                    {!cardCameraOn ? (
+                      <div className="flex flex-col items-center justify-center gap-3 text-center" style={{ minHeight: 160 }}>
+                        <ScanLine size={28} color={MOSS} />
+                        <p className="text-sm opacity-70">Point your camera at the card — name, title, company, and contact details are lifted automatically. Add a voice note after for context the card can't hold.</p>
+                        <button
+                          onClick={startCardCamera}
+                          className="mt-2 text-sm font-medium px-4 py-2 rounded-lg flex items-center gap-2"
+                          style={{ background: MOSS, color: "#fff" }}
+                        >
+                          <ScanLine size={14} /> Scan card
+                        </button>
+                        {cardOcrError && <p className="text-xs mt-1" style={{ color: CLAY }}>{cardOcrError}</p>}
+                      </div>
+                    ) : (
+                      <div className="grid gap-3">
+                        <div className="rounded-xl overflow-hidden" style={{ background: INK }}>
+                          <video ref={cardVideoRef} playsInline muted className="w-full block" style={{ maxHeight: 300, objectFit: "cover" }} />
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={captureAndScanCard}
+                            className="flex items-center gap-2 text-sm font-medium px-4 py-2 rounded-lg"
+                            style={{ background: MOSS, color: "#fff" }}
+                          >
+                            <ScanLine size={14} /> Capture &amp; read card
+                          </button>
+                          <button onClick={stopCardCamera} className="text-sm font-medium px-4 py-2 rounded-lg" style={{ border: `1px solid ${SAND}` }}>
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {cardOcrLoading && (
+                      <p className="text-xs opacity-60 mt-3 flex items-center gap-1.5"><Sparkles size={12} /> Reading the card\u2026</p>
+                    )}
                   </div>
                 ) : (
                   <div>
                     <p className="font-mono text-xs uppercase tracking-widest opacity-60 mb-3 flex items-center gap-1.5">
                       <Sparkles size={12} style={{ color: OCHRE }} /> Lifted from the card
                     </p>
-                    <div className="grid gap-2 mb-5">
-                      {[
-                        ["Name", ""],
-                        ["Title", ""],
-                        ["Company", ""],
-                        ["Phone", ""],
-                        ["Email", ""],
-                      ].map(([label, val]) => (
-                        <div key={label} className="grid grid-cols-[90px_1fr] gap-2 items-center">
-                          <span className="font-mono text-[10px] uppercase tracking-wide opacity-50">{label}</span>
-                          <div className="px-3 py-1.5 rounded-lg text-sm opacity-50 italic" style={{ background: PAPER, border: `1px solid ${SAND}` }}>{val || "Pending OCR"}</div>
-                        </div>
-                      ))}
+                    {cardOcrError && (
+                      <p className="text-xs mb-2 flex items-start gap-1.5" style={{ color: CLAY }}>
+                        <Info size={12} className="shrink-0 mt-0.5" /> {cardOcrError}
+                      </p>
+                    )}
+                    <div className="flex gap-4 mb-4">
+                      {cardImage && (
+                        <img src={cardImage} alt="Captured business card" className="rounded-lg shrink-0" style={{ width: 96, height: 96, objectFit: "cover", border: `1px solid ${SAND}` }} />
+                      )}
+                      <div className="grid gap-2 flex-1 min-w-0">
+                        {[
+                          ["name", "Name"],
+                          ["title", "Title"],
+                          ["company", "Company"],
+                          ["phone", "Phone"],
+                          ["email", "Email"],
+                        ].map(([key, label]) => (
+                          <div key={key} className="grid grid-cols-[70px_1fr] gap-2 items-center">
+                            <span className="font-mono text-[10px] uppercase tracking-wide opacity-50">{label}</span>
+                            <input
+                              value={cardFields[key]}
+                              onChange={(e) => setCardFields((f) => ({ ...f, [key]: e.target.value }))}
+                              placeholder="Not detected — type it in"
+                              className="px-3 py-1.5 rounded-lg text-sm outline-none w-full"
+                              style={{ background: PAPER, border: `1px solid ${SAND}` }}
+                            />
+                          </div>
+                        ))}
+                      </div>
                     </div>
+                    <button onClick={retakeCard} className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full mb-5" style={{ border: `1px solid ${SAND}` }}>
+                      <RefreshCw size={12} /> Retake photo
+                    </button>
 
                     <div style={{ borderTop: `1px solid ${SAND}` }} className="pt-4">
                       <p className="text-sm font-medium mb-1">The card can't tell you what stood out</p>
                       <p className="text-xs opacity-60 mb-3">Add a quick voice note now, while the conversation is still fresh.</p>
 
-                      <div className="flex items-center gap-4 mb-4">
-                        <div className="w-12 h-12 rounded-full flex items-center justify-center shrink-0" style={{ background: CLAY }}>
-                          <Mic size={20} color="#fff" />
-                        </div>
-                        <div className="flex items-end gap-1 h-8">
-                          {[6,14,9,20,12,17,7,15,10,5].map((h,i) => (
-                            <div key={i} style={{ width: 3, height: h, background: MOSS, borderRadius: 2 }} />
-                          ))}
-                        </div>
-                        <span className="font-mono text-xs opacity-60 ml-auto">0:17</span>
-                      </div>
-
                       {!cardVoiceCaptured ? (
-                        <button
-                          onClick={() => setCardVoiceCaptured(true)}
-                          className="text-sm font-medium px-4 py-2 rounded-lg flex items-center gap-2"
-                          style={{ background: MOSS, color: "#fff" }}
-                        >
-                          <Sparkles size={14} /> Transcribe &amp; merge with card
-                        </button>
+                        <VoiceRecorder
+                          engine={speech}
+                          target="cardVoice"
+                          background="#fff"
+                          onResult={(text) => { setCardVoiceTranscript(text); setCardVoiceCaptured(true); }}
+                        />
                       ) : (
-                        <div className="font-mono text-xs leading-relaxed p-4 rounded-lg opacity-60 italic" style={{ background: PAPER }}>
-                          Transcription will appear here once speech-to-text is connected.
+                        <div>
+                          <div className="font-mono text-xs leading-relaxed p-4 rounded-lg" style={{ background: PAPER }}>
+                            {cardVoiceTranscript || "No speech was detected \u2014 try recording again, or type it in instead."}
+                          </div>
+                          <button
+                            onClick={() => { setCardVoiceCaptured(false); setCardVoiceTranscript(""); }}
+                            className="mt-3 text-xs font-medium px-3 py-1.5 rounded-full flex items-center gap-1.5"
+                            style={{ border: `1px solid ${SAND}` }}
+                          >
+                            <RefreshCw size={12} /> Record again
+                          </button>
                         </div>
                       )}
                     </div>
@@ -873,17 +1134,11 @@ function Afterglow() {
                 </div>
 
                 {contextMode === "voice" && !contextVoiceCaptured ? (
-                  <div className="rounded-lg p-3 flex items-center gap-3" style={{ background: PAPER }}>
-                    <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0" style={{ background: CLAY }}>
-                      <Mic size={14} color="#fff" />
-                    </div>
-                    <div className="flex items-end gap-1 h-5 flex-1">
-                      {[5,10,6,13,8,11,4].map((h,i) => <div key={i} style={{ width: 3, height: h, background: MOSS, borderRadius: 2 }} />)}
-                    </div>
-                    <button onClick={fillContextFromVoice} className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-full shrink-0" style={{ background: MOSS, color: "#fff" }}>
-                      <Sparkles size={11} /> Stop &amp; fill in
-                    </button>
-                  </div>
+                  <VoiceRecorder
+                    engine={speech}
+                    target="context"
+                    onResult={(text) => { if (text) setContextDraft(text); setContextVoiceCaptured(true); }}
+                  />
                 ) : (
                   <textarea
                     value={contextDraft}
@@ -955,23 +1210,20 @@ function Afterglow() {
                         </div>
 
                         {inputMode === "voice" && !voiceCaptured && (
-                          <div className="rounded-xl p-4 flex items-center gap-4" style={{ background: PAPER }}>
-                            <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0" style={{ background: CLAY }}>
-                              <Mic size={16} color="#fff" />
-                            </div>
-                            <div className="flex items-end gap-1 h-6 flex-1">
-                              {[5,11,7,15,9,13,6,10].map((h,i) => (
-                                <div key={i} style={{ width: 3, height: h, background: MOSS, borderRadius: 2 }} />
-                              ))}
-                            </div>
-                            <button
-                              onClick={fillFromVoice}
-                              className="flex items-center gap-1.5 text-xs font-medium px-3 py-2 rounded-full shrink-0"
-                              style={{ background: MOSS, color: "#fff" }}
-                            >
-                              <Sparkles size={12} /> Stop &amp; fill in
-                            </button>
-                          </div>
+                          <VoiceRecorder
+                            engine={speech}
+                            target="angle"
+                            onResult={(text) => {
+                              if (text) {
+                                setDraft((d) => ({
+                                  ...d,
+                                  reasoning: text,
+                                  title: d.title && d.title !== "New angle" ? d.title : titleFromTranscript(text),
+                                }));
+                              }
+                              setVoiceCaptured(true);
+                            }}
+                          />
                         )}
 
                         {(inputMode === "text" || voiceCaptured) && (
@@ -1262,17 +1514,12 @@ function Afterglow() {
                             </div>
 
                             {momentMode === "voice" && !momentVoiceCaptured ? (
-                              <div className="rounded-lg p-3 flex items-center gap-3" style={{ background: "#fff" }}>
-                                <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0" style={{ background: CLAY }}>
-                                  <Mic size={14} color="#fff" />
-                                </div>
-                                <div className="flex items-end gap-1 h-5 flex-1">
-                                  {[4,9,6,12,7,10,5].map((h,i) => <div key={i} style={{ width: 3, height: h, background: MOSS, borderRadius: 2 }} />)}
-                                </div>
-                                <button onClick={fillMomentFromVoice} className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-full shrink-0" style={{ background: MOSS, color: "#fff" }}>
-                                  <Sparkles size={11} /> Fill in
-                                </button>
-                              </div>
+                              <VoiceRecorder
+                                engine={speech}
+                                target="moment"
+                                background="#fff"
+                                onResult={(text) => { if (text) setMomentDraft((d) => ({ ...d, note: text })); setMomentVoiceCaptured(true); }}
+                              />
                             ) : (
                               <div className="grid gap-2">
                                 <input
@@ -1364,17 +1611,11 @@ function Afterglow() {
                             </div>
 
                             {detailMode === "voice" && !detailVoiceCaptured ? (
-                              <div className="rounded-lg p-3 flex items-center gap-3" style={{ background: PAPER }}>
-                                <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0" style={{ background: CLAY }}>
-                                  <Mic size={14} color="#fff" />
-                                </div>
-                                <div className="flex items-end gap-1 h-5 flex-1">
-                                  {[5,10,6,13,8,11,4].map((h,i) => <div key={i} style={{ width: 3, height: h, background: MOSS, borderRadius: 2 }} />)}
-                                </div>
-                                <button onClick={fillDetailFromVoice} className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-full shrink-0" style={{ background: MOSS, color: "#fff" }}>
-                                  <Sparkles size={11} /> Stop &amp; fill in
-                                </button>
-                              </div>
+                              <VoiceRecorder
+                                engine={speech}
+                                target="detail"
+                                onResult={(text) => { if (text) setDetailDraft(text); setDetailVoiceCaptured(true); }}
+                              />
                             ) : (
                               <textarea
                                 value={detailDraft}
@@ -1453,17 +1694,12 @@ function Afterglow() {
                                 </div>
 
                                 {ownSuggestionMode === "voice" && !ownSuggestionVoiceCaptured ? (
-                                  <div className="rounded-lg p-3 flex items-center gap-3" style={{ background: "#fff" }}>
-                                    <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0" style={{ background: CLAY }}>
-                                      <Mic size={14} color="#fff" />
-                                    </div>
-                                    <div className="flex items-end gap-1 h-5 flex-1">
-                                      {[5,10,6,13,8,11,4].map((h,i) => <div key={i} style={{ width: 3, height: h, background: MOSS, borderRadius: 2 }} />)}
-                                    </div>
-                                    <button onClick={fillOwnSuggestionFromVoice} className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-full shrink-0" style={{ background: MOSS, color: "#fff" }}>
-                                      <Sparkles size={11} /> Fill in
-                                    </button>
-                                  </div>
+                                  <VoiceRecorder
+                                    engine={speech}
+                                    target="ownSuggestion"
+                                    background="#fff"
+                                    onResult={(text) => { if (text) setOwnSuggestionDraft(text); setOwnSuggestionVoiceCaptured(true); }}
+                                  />
                                 ) : (
                                   <textarea
                                     value={ownSuggestionDraft}
@@ -1589,17 +1825,12 @@ function Afterglow() {
                               </div>
 
                               {todoMode === "voice" && !todoVoiceCaptured ? (
-                                <div className="rounded-lg p-3 flex items-center gap-3" style={{ background: "#fff" }}>
-                                  <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0" style={{ background: CLAY }}>
-                                    <Mic size={14} color="#fff" />
-                                  </div>
-                                  <div className="flex items-end gap-1 h-5 flex-1">
-                                    {[5,10,6,13,8,11,4].map((h,i) => <div key={i} style={{ width: 3, height: h, background: MOSS, borderRadius: 2 }} />)}
-                                  </div>
-                                  <button onClick={fillTodoFromVoice} className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-full shrink-0" style={{ background: MOSS, color: "#fff" }}>
-                                    <Sparkles size={11} /> Fill in
-                                  </button>
-                                </div>
+                                <VoiceRecorder
+                                  engine={speech}
+                                  target="todo"
+                                  background="#fff"
+                                  onResult={(text) => { if (text) setTodoDraft(text); setTodoVoiceCaptured(true); }}
+                                />
                               ) : (
                                 <input
                                   value={todoDraft}
