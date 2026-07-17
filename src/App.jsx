@@ -25,156 +25,43 @@ const steps = [
   { id: 6, label: "Impact" },
 ];
 
-const initialAngles = [
-  {
-    id: "a",
-    title: "Send the indemnification case note",
-    reasoning: "You promised her your case note on indemnification clauses right after the negotiation sim — specific, already expected, easy to send.",
-    source: "ai",
-  },
-  {
-    id: "b",
-    title: "Ask how the antitrust clearance went",
-    reasoning: "She mentioned her deal needed Brazilian antitrust clearance. Following up on the specific stake shows you were actually listening.",
-    source: "ai",
-  },
-  {
-    id: "c",
-    title: "Propose a working coffee",
-    reasoning: "Lowest-effort, general-purpose. Use only if the first two don't fit — it doesn't reference anything specific to the conversation.",
-    source: "ai",
-  },
-];
+// Populated at runtime once a conversation is captured and angles are generated.
+const initialAngles = [];
 
-const morePool = [
-  {
-    id: "d",
-    title: "Offer to swap course outlines",
-    reasoning: "She's cross-registered into Torts for the liability angle, you're doing the same with M&A — trading outlines is low-effort and genuinely useful to both.",
-    source: "ai",
-  },
-  {
-    id: "e",
-    title: "Suggest co-writing a note on the overlap",
-    reasoning: "Deal risk-allocation and tort liability keep intersecting in your conversations — a short co-authored note could be a real output, not just small talk.",
-    source: "ai",
-  },
-  {
-    id: "f",
-    title: "Invite her to the study group before finals",
-    reasoning: "You're both cross-registered across each other's subjects — a shared study session covers more ground than either of you prepping alone.",
-    source: "ai",
-  },
-];
+// Additional AI-suggested angles, fetched/generated on demand via "Suggest another angle".
+const morePool = [];
 
 const platformCopy = {
   whatsapp: {
     icon: MessageCircle,
     label: "WhatsApp",
     tone: "Short, warm, one link, no subject line.",
-    text: "Hey Elena! Great being grouped with you for the negotiation sim — here's that indemnification case note I mentioned: [link]. How did the antitrust clearance go on your deal?",
+    text: "",
   },
   sms: {
     icon: MessageSquare,
     label: "SMS",
     tone: "Shortest of all, no link previews assumed, no emoji-heavy tone.",
-    text: "Hi Elena, Gerald here from the negotiation sim group. Sending the indemnification case note by email — let me know how the antitrust clearance goes.",
+    text: "",
   },
   email: {
     icon: Mail,
     label: "Email",
     tone: "Full sentences, clear ask, easy to forward internally.",
-    text: "Subject: Following up from the negotiation sim — indemnification case note\n\nHi Elena,\n\nGood being paired with you for the negotiation simulation. Between that and comparing notes at the Torts seminar and your M&A workshop, it's been a good week of overlap between our two tracks.\n\nAttaching the case note on indemnification clauses I mentioned — curious how the Brazilian antitrust clearance is going on the deal you described.\n\nBest,\nGerald",
+    text: "",
   },
   linkedin: {
     icon: Linkedin,
     label: "LinkedIn",
     tone: "Public-adjacent, credibility-forward, no attachments.",
-    text: "Great being paired with you for our cohort's negotiation simulation, Elena — really enjoyed hearing about the cross-border M&A work in S\u00e3o Paulo. Sent over that indemnification case note, thought it might be useful for the deal risk-allocation piece.",
+    text: "",
   },
 };
-
-function daysAgo(n) {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toISOString().slice(0, 10);
-}
 
 function hoursSinceContact(c) {
   if (!c.timeline || c.timeline.length === 0) return 9999;
   const latest = c.timeline.reduce((max, t) => (t.dateISO > max ? t.dateISO : max), c.timeline[0].dateISO);
   return Math.max(0, (Date.now() - new Date(latest + "T00:00:00").getTime()) / 36e5);
-}
-
-function buildSeedContacts() {
-  return [
-  {
-    name: "Elena Duarte",
-    context: "Berkeley Executive LLM cohort · M&A, S\u00e3o Paulo",
-    phone: "+55 11 98765 4321",
-    email: "elena.duarte@lawfirm.com.br",
-    linkedin: "linkedin.com/in/elena-duarte",
-    stage: "sprout",
-    timeline: [
-      { id: "w1", dateISO: daysAgo(5), place: "Torts Seminar, Berkeley Law", note: "Cross-registered from her M&A track for the cross-border liability angle. Sharp on deal-risk allocation.", manual: false },
-      { id: "w2", dateISO: daysAgo(3), place: "M&A Case Study Workshop", note: "Sat in on her workshop — walked through a cross-border acquisition needing Brazilian antitrust clearance.", manual: false },
-      { id: "w3", dateISO: daysAgo(1), place: "Cohort Negotiation Simulation", note: "Paired together in the exercise. Promised her a case note on indemnification clauses after.", manual: false },
-      { id: "w4", dateISO: daysAgo(1), place: "Follow-up · WhatsApp", note: "Sent the indemnification case note as promised.", manual: false },
-    ],
-    todos: [
-      { id: "wt1", text: "If she replies, ask how the antitrust clearance went on her deal.", done: false },
-    ],
-  },
-  {
-    name: "David O.",
-    context: "Y Combinator visit · fintech founder",
-    phone: "+1 415 555 0138",
-    email: "david@fintechco.io",
-    linkedin: "linkedin.com/in/david-o",
-    stage: "seed",
-    timeline: [
-      { id: "d1", dateISO: daysAgo(2), place: "YC office, Potrero Hill", note: "Building a lending product on M-Pesa rails, raising a seed round in Q4.", manual: false },
-    ],
-    todos: [
-      { id: "dt1", text: "Send something on the FIFI investment structure before this goes cold.", done: false },
-    ],
-  },
-  {
-    name: "Amara N.",
-    context: "Berkeley Executive LLM cohort · Accra",
-    phone: "+233 24 123 4567",
-    email: "amara.n@lawfirm.com.gh",
-    linkedin: "linkedin.com/in/amara-n",
-    stage: "budding",
-    timeline: [
-      { id: "a1", dateISO: daysAgo(90), place: "Cohort orientation picnic, Cesar Chavez Park", note: "Runs fintech regulation practice in Accra. Traded notes on cross-border data flows.", manual: false },
-      { id: "a2", dateISO: daysAgo(45), place: "Thursday rally, after IP class", note: "Pushed back on Prof. Syed's patent-eligibility framework — thinks it under-serves African filers at ARIPO.", manual: false },
-      { id: "a3", dateISO: daysAgo(10), place: "Cohort weekend trip, Napa", note: "Presenting at AfricaTech Accra in March. Asked for an intro to KIPI contacts.", manual: false },
-    ],
-    todos: [
-      { id: "at1", text: "Ask how the AfricaTech talk went before next Thursday.", done: false },
-      { id: "at2", text: "Send the KIPI contact intro she asked for.", done: false },
-      { id: "at3", text: "Congratulate her on the AfricaTech invite.", done: true },
-    ],
-  },
-  {
-    name: "Peter M.",
-    context: "KKN diaspora BBQ · SACCO diaspora desk",
-    phone: "+1 202 555 0172",
-    email: "peter.m@diasporasacco.com",
-    linkedin: "linkedin.com/in/peter-m",
-    stage: "bloom",
-    timeline: [
-      { id: "p1", dateISO: daysAgo(60), place: "Urafiki BBQ, diaspora legal desk launch", note: "Runs a diaspora SACCO remittance product, wants compliance review.", manual: false },
-      { id: "p2", dateISO: daysAgo(50), place: "Follow-up · Email", note: "Sent the diaspora services sheet and a proposed scope.", manual: false },
-      { id: "p3", dateISO: daysAgo(30), place: "Call scheduled", note: "Kickoff meeting booked for the compliance review.", manual: false },
-    ],
-    todos: [
-      { id: "pt1", text: "Bring the ARO fee schedule to the engagement letter.", done: false },
-      { id: "pt2", text: "Send the calendar invite for kickoff.", done: true },
-    ],
-  },
-  ];
 }
 
 function fmtDate(iso) {
@@ -183,12 +70,8 @@ function fmtDate(iso) {
   return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
 
-const initialNudges = [
-  { id: "n0", type: "capture", source: "calendar", text: "Your \"Thursday IP class\" just ended — capture anyone new before it fades." },
-  { id: "n1", type: "todo", contact: "David O.", text: "It's been 21 hours since YC — send the FIFI note before this goes cold." },
-  { id: "n2", type: "todo", contact: "Amara N.", text: "Her AfricaTech talk was likely this week — worth asking how it went before Thursday." },
-  { id: "n3", type: "todo", contact: "Peter M.", text: "Kickoff call is booked — confirm you've got the ARO fee schedule ready." },
-];
+// Populated at runtime from real calendar events and pending to-dos.
+const initialNudges = [];
 
 const stageMeta = {
   seed: { icon: Circle, color: SAND, textColor: INK, label: "Seed — captured", verified: "Logged automatically on capture" },
@@ -222,7 +105,7 @@ function Afterglow() {
   const [cardScanned, setCardScanned] = useState(false);
   const [cardVoiceCaptured, setCardVoiceCaptured] = useState(false);
   const [transcribed, setTranscribed] = useState(false);
-  const [selectedAngle, setSelectedAngle] = useState("a");
+  const [selectedAngle, setSelectedAngle] = useState(null);
   const [platform, setPlatform] = useState("whatsapp");
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState(null);
@@ -248,14 +131,7 @@ function Afterglow() {
       const { data, error } = await supabase.from("contacts").select("*").order("created_at");
       if (error) { console.error(error); setContactsLoading(false); return; }
       if (cancelled) return;
-      if (data.length === 0) {
-        const seed = buildSeedContacts();
-        const { data: inserted, error: insertError } = await supabase.from("contacts").insert(seed).select();
-        if (insertError) { console.error(insertError); setContactsLoading(false); return; }
-        if (!cancelled) setContactsRaw(inserted);
-      } else {
-        setContactsRaw(data);
-      }
+      setContactsRaw(data);
       if (!cancelled) setContactsLoading(false);
     }
     load();
@@ -355,7 +231,7 @@ function Afterglow() {
     return {
       whatsapp: `Hey ${firstName}! ${clean} 🙂`,
       sms: `Hi ${firstName}, ${clean}`,
-      email: `Subject: Following up\n\nHi ${firstName},\n\n${clean}\n\nBest,\nGerald`,
+      email: `Subject: Following up\n\nHi ${firstName},\n\n${clean}\n\nBest,\n[Your name]`,
       linkedin: `Hi ${firstName} — ${clean}`,
     };
   }
@@ -395,15 +271,9 @@ function Afterglow() {
   const filteredContacts = contacts.filter((c) => contactMatches(c, search));
 
   function suggestTodosFromMoment(note, place) {
-    const t = `${note} ${place}`.toLowerCase();
     const trimmed = note.trim();
     const short = trimmed.length > 60 ? trimmed.slice(0, 60) + "\u2026" : trimmed;
     const options = [];
-
-    if (t.includes("visa")) options.push("Ask how the extended stay is going next time you see her.");
-    if (t.includes("africatech") || t.includes("presenting")) options.push("Ask how the AfricaTech talk went.");
-    if (t.includes("kipi")) options.push("Send the KIPI contact intro she asked for.");
-    if (t.includes("clerk") || t.includes("judge") || t.includes("court")) options.push("Ask about her time clerking before she moved into M&A.");
 
     if (trimmed) {
       options.push(`Bring it up next time you talk \u2014 "${short}"`);
@@ -419,19 +289,7 @@ function Afterglow() {
   // detail — not just whatever was most recently typed in. On-demand, not reactive.
   function suggestTodosFromProfile(c) {
     const firstName = c.name.split(" ")[0];
-    const corpus = [
-      ...(c.timeline || []).map((t) => t.note || ""),
-      ...(c.contextNotes || []),
-    ].join(" ").toLowerCase();
     const options = [];
-
-    if (corpus.includes("visa")) options.push("Ask how the extended stay worked out.");
-    if (corpus.includes("africatech") || corpus.includes("presenting")) options.push("Ask how the AfricaTech talk went.");
-    if (corpus.includes("kipi")) options.push("Send the KIPI contact intro she asked for.");
-    if (corpus.includes("clerk") || corpus.includes("judge") || corpus.includes("court")) options.push("Ask what made her move from clerking into M&A.");
-    if (corpus.includes("antitrust")) options.push("Ask how the antitrust clearance turned out.");
-    if (corpus.includes("indemnification")) options.push("Check if she got any feedback on the indemnification note.");
-    if (corpus.includes("negotiation") || corpus.includes(" sim")) options.push("Ask what she'd do differently in the negotiation sim now.");
 
     const latest = c.timeline && c.timeline.length ? c.timeline[c.timeline.length - 1] : null;
     options.push(`Follow up on your last touchpoint \u2014 ${latest ? latest.place : "wherever you left off"}.`);
@@ -505,7 +363,7 @@ function Afterglow() {
     setTodoChannel("message");
   }
   function fillTodoFromVoice() {
-    setTodoDraft("Ask if she's free to co-present a session at next term's Legal Tech Week.");
+    // TODO: wire up real speech-to-text transcription here.
     setTodoVoiceCaptured(true);
   }
   function saveTodo(contactName) {
@@ -524,11 +382,7 @@ function Afterglow() {
     setMomentVoiceCaptured(false);
   }
   function fillMomentFromVoice() {
-    setMomentDraft((d) => ({
-      ...d,
-      place: "Ran into her at Peet's on Bancroft",
-      note: "Not a planned catch-up — mentioned her visa renewal came through, staying through the summer term.",
-    }));
+    // TODO: wire up real speech-to-text transcription here.
     setMomentVoiceCaptured(true);
   }
   function saveMoment(contactName) {
@@ -551,7 +405,7 @@ function Afterglow() {
     setDetailVoiceCaptured(false);
   }
   function fillDetailFromVoice() {
-    setDetailDraft("Oh — she also mentioned she clerked for a judge on the S\u00e3o Paulo commercial court before moving into M&A.");
+    // TODO: wire up real speech-to-text transcription here.
     setDetailVoiceCaptured(true);
   }
   function saveDetail(contactName) {
@@ -596,7 +450,7 @@ function Afterglow() {
     setOwnSuggestionVoiceCaptured(false);
   }
   function fillOwnSuggestionFromVoice() {
-    setOwnSuggestionDraft("Actually, tell her the case note landed well with my study group too — she'd probably like knowing that.");
+    // TODO: wire up real speech-to-text transcription here.
     setOwnSuggestionVoiceCaptured(true);
   }
   function saveOwnSuggestion() {
@@ -616,10 +470,7 @@ function Afterglow() {
     setVoiceCaptured(false);
   }
   function fillFromVoice() {
-    setDraft({
-      title: "Offer the negotiation sim debrief notes",
-      reasoning: "She mentioned she wants to tighten her cold-opening tactics before the next round \u2014 your debrief notes from the sim are directly useful.",
-    });
+    // TODO: wire up real speech-to-text transcription here.
     setVoiceCaptured(true);
   }
   function saveEdit(id) {
@@ -633,17 +484,10 @@ function Afterglow() {
     setContextVoiceCaptured(false);
   }
   function fillContextFromVoice() {
-    setContextDraft("Oh — she also mentioned she clerked for a judge on the S\u00e3o Paulo commercial court before moving into M&A. That's probably why she's so sharp on risk allocation.");
+    // TODO: wire up real speech-to-text transcription here.
     setContextVoiceCaptured(true);
   }
   function deriveAngleFromContext(note) {
-    const t = note.toLowerCase();
-    if (t.includes("clerk") || t.includes("judge") || t.includes("court")) {
-      return {
-        title: "Ask about her time clerking",
-        reasoning: "New detail you just added — a judicial clerkship before M&A is a distinctive background worth asking about directly.",
-      };
-    }
     const trimmed = note.trim();
     return {
       title: `Follow up on: "${trimmed.length > 60 ? trimmed.slice(0, 60) + "\u2026" : trimmed}"`,
@@ -852,10 +696,8 @@ function Afterglow() {
                     <Sparkles size={14} /> Transcribe &amp; extract
                   </button>
                 ) : (
-                  <div className="font-mono text-xs leading-relaxed p-4 rounded-lg" style={{ background: PAPER }}>
-                    "Met Elena at the Torts seminar, she's actually an M&A associate from S\u00e3o
-                    Paulo, cross-registered for the cross-border liability angle. We ended up
-                    paired in the same negotiation sim too — sharp on deal-risk allocation."
+                  <div className="font-mono text-xs leading-relaxed p-4 rounded-lg opacity-60 italic" style={{ background: PAPER }}>
+                    Transcription will appear here once speech-to-text is connected.
                   </div>
                 )}
               </div>
@@ -882,15 +724,15 @@ function Afterglow() {
                     </p>
                     <div className="grid gap-2 mb-5">
                       {[
-                        ["Name", "Elena Duarte"],
-                        ["Title", "M&A Associate"],
-                        ["Company", "Almeida & Duarte Advogados, S\u00e3o Paulo"],
-                        ["Phone", "+55 11 98765 4321"],
-                        ["Email", "elena.duarte@lawfirm.com.br"],
+                        ["Name", ""],
+                        ["Title", ""],
+                        ["Company", ""],
+                        ["Phone", ""],
+                        ["Email", ""],
                       ].map(([label, val]) => (
                         <div key={label} className="grid grid-cols-[90px_1fr] gap-2 items-center">
                           <span className="font-mono text-[10px] uppercase tracking-wide opacity-50">{label}</span>
-                          <div className="px-3 py-1.5 rounded-lg text-sm" style={{ background: PAPER, border: `1px solid ${SAND}` }}>{val}</div>
+                          <div className="px-3 py-1.5 rounded-lg text-sm opacity-50 italic" style={{ background: PAPER, border: `1px solid ${SAND}` }}>{val || "Pending OCR"}</div>
                         </div>
                       ))}
                     </div>
@@ -920,10 +762,8 @@ function Afterglow() {
                           <Sparkles size={14} /> Transcribe &amp; merge with card
                         </button>
                       ) : (
-                        <div className="font-mono text-xs leading-relaxed p-4 rounded-lg" style={{ background: PAPER }}>
-                          "Cross-registered from her M&A track for the cross-border liability
-                          angle in Torts. Sharp on deal-risk allocation — ended up paired with
-                          her in the negotiation sim too."
+                        <div className="font-mono text-xs leading-relaxed p-4 rounded-lg opacity-60 italic" style={{ background: PAPER }}>
+                          Transcription will appear here once speech-to-text is connected.
                         </div>
                       )}
                     </div>
@@ -954,15 +794,15 @@ function Afterglow() {
 
             <div className="rounded-2xl p-6 grid gap-4" style={{ background: "#fff", border: `1px solid ${SAND}` }}>
               {[
-                ["Name", "Elena Duarte"],
-                ["Where you met", "Torts Seminar, Berkeley Law, 10 Jul"],
-                ["Role / context", "M&A associate, S\u00e3o Paulo \u2014 cross-registered for Torts"],
-                ["What stood out", "Sharp on deal-risk allocation and indemnification structuring"],
-                ["Shared thread", "Also paired together in the cohort negotiation simulation"],
+                ["Name", ""],
+                ["Where you met", ""],
+                ["Role / context", ""],
+                ["What stood out", ""],
+                ["Shared thread", ""],
               ].map(([label, val]) => (
                 <div key={label} className="grid md:grid-cols-[160px_1fr] gap-2 items-center">
                   <span className="font-mono text-xs uppercase tracking-wide opacity-60">{label}</span>
-                  <div className="px-3 py-2 rounded-lg text-sm" style={{ background: PAPER, border: `1px solid ${SAND}` }}>{val}</div>
+                  <div className="px-3 py-2 rounded-lg text-sm opacity-50 italic" style={{ background: PAPER, border: `1px solid ${SAND}` }}>{val || "Pending extraction"}</div>
                 </div>
               ))}
             </div>
@@ -970,18 +810,18 @@ function Afterglow() {
             <p className="font-mono text-xs uppercase tracking-widest opacity-60 mt-8 mb-3">So "push" goes to the right place</p>
             <div className="rounded-2xl p-6 grid gap-4" style={{ background: "#fff", border: `1px solid ${SAND}` }}>
               {[
-                ["WhatsApp / SMS", "+55 11 98765 4321", MessageCircle],
-                ["Email", "elena.duarte@lawfirm.com.br", Mail],
-                ["LinkedIn profile", "linkedin.com/in/elena-duarte", Linkedin],
+                ["WhatsApp / SMS", "", MessageCircle],
+                ["Email", "", Mail],
+                ["LinkedIn profile", "", Linkedin],
               ].map(([label, val, Icn]) => (
                 <div key={label} className="grid md:grid-cols-[160px_1fr] gap-2 items-center">
                   <span className="font-mono text-xs uppercase tracking-wide opacity-60 flex items-center gap-1.5"><Icn size={12} /> {label}</span>
-                  <div className="px-3 py-2 rounded-lg text-sm" style={{ background: PAPER, border: `1px solid ${SAND}` }}>{val}</div>
+                  <div className="px-3 py-2 rounded-lg text-sm opacity-50 italic" style={{ background: PAPER, border: `1px solid ${SAND}` }}>{val || "Not captured yet"}</div>
                 </div>
               ))}
               <p className="text-xs opacity-60 flex items-start gap-1.5">
                 <Info size={13} className="shrink-0 mt-0.5" />
-                Captured once — every future push reuses these, no re-searching. LinkedIn can only open her profile, not a pre-filled chat; that's a LinkedIn limitation, not this app's.
+                Captured once — every future push reuses these, no re-searching. LinkedIn can only open a profile, not a pre-filled chat; that's a LinkedIn limitation, not this app's.
               </p>
             </div>
 
@@ -1321,7 +1161,7 @@ function Afterglow() {
         {step === 5 && (
           <div>
             <h2 className="font-display text-2xl mb-2">Everyone you're cultivating</h2>
-            <p className="opacity-70 mb-6 text-sm">Search by name, topic, or place — "M&A" or "Torts Seminar" work as well as a name. Open anyone to see how the relationship has actually grown, touchpoint by touchpoint.</p>
+            <p className="opacity-70 mb-6 text-sm">Search by name, topic, or place — a company name or event works as well as a name. Open anyone to see how the relationship has actually grown, touchpoint by touchpoint.</p>
 
             <div className="flex items-center gap-2 mb-5 px-4 py-2.5 rounded-full" style={{ background: "#fff", border: `1px solid ${SAND}` }}>
               <Search size={15} className="opacity-50" />
@@ -1452,7 +1292,9 @@ function Afterglow() {
                                   />
                                   <button
                                     type="button"
-                                    onClick={() => setMomentDraft((d) => ({ ...d, place: "Sutardja Dai Hall, Berkeley" }))}
+                                    onClick={() => {
+                                      // TODO: wire up real geolocation / reverse-geocoding here.
+                                    }}
                                     className="flex items-center gap-1.5 text-xs font-medium px-3 rounded-lg shrink-0"
                                     style={{ border: `1px solid ${SAND}` }}
                                     title="Fill from current location"
@@ -1892,7 +1734,7 @@ function Afterglow() {
       </div>
 
       {pushOpen && (() => {
-        const pushContactName = composeOverride ? composeOverride.contact : "Elena Duarte";
+        const pushContactName = composeOverride ? composeOverride.contact : "Contact";
         const record = contacts.find((c) => c.name === pushContactName);
         return (
           <PushPreview
