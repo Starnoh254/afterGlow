@@ -99,18 +99,41 @@ function FreshnessRing({ hours }) {
   );
 }
 
+// A recording can run for at most this long before it's auto-stopped —
+// long enough for a real thought, short enough that it can't run forever
+// in someone's pocket.
+const MAX_RECORDING_MS = 60000;
+
+function formatMMSS(ms) {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
 // Real speech-to-text, backed by the browser's SpeechRecognition API.
 // Only one recording happens at a time app-wide; `activeTarget` says which
 // widget currently owns the mic so the right one shows the live transcript.
+// Recordings are capped at MAX_RECORDING_MS and auto-stop when they hit it.
 function useSpeechEngine() {
   const recognitionRef = useRef(null);
   const [isListening, setIsListening] = useState(false);
   const [interim, setInterim] = useState("");
   const [error, setError] = useState(null);
   const [activeTarget, setActiveTarget] = useState(null);
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const startTimeRef = useRef(null);
+  const tickRef = useRef(null);
+  const autoStopRef = useRef(null);
   const supported = typeof window !== "undefined" && !!(window.SpeechRecognition || window.webkitSpeechRecognition);
 
+  function clearTimers() {
+    if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
+    if (autoStopRef.current) { clearTimeout(autoStopRef.current); autoStopRef.current = null; }
+  }
+
   useEffect(() => () => {
+    clearTimers();
     if (recognitionRef.current) {
       try { recognitionRef.current.stop(); } catch (e) { /* already stopped */ }
     }
@@ -125,6 +148,7 @@ function useSpeechEngine() {
     if (recognitionRef.current) {
       try { recognitionRef.current.stop(); } catch (e) { /* already stopped */ }
     }
+    clearTimers();
     setError(null);
     const recognition = new SR();
     recognition.continuous = true;
@@ -146,6 +170,7 @@ function useSpeechEngine() {
       }
     };
     recognition.onend = () => {
+      clearTimers();
       setIsListening(false);
       setActiveTarget(null);
       onDone && onDone(finalText.trim());
@@ -154,9 +179,18 @@ function useSpeechEngine() {
     setInterim("");
     setActiveTarget(target);
     setIsListening(true);
+    setElapsedMs(0);
+    startTimeRef.current = Date.now();
+    tickRef.current = setInterval(() => {
+      setElapsedMs(Date.now() - startTimeRef.current);
+    }, 200);
+    autoStopRef.current = setTimeout(() => {
+      stop();
+    }, MAX_RECORDING_MS);
     try {
       recognition.start();
     } catch (e) {
+      clearTimers();
       setIsListening(false);
       setActiveTarget(null);
       setError(String((e && e.message) || e));
@@ -169,7 +203,7 @@ function useSpeechEngine() {
     }
   }
 
-  return { start, stop, isListening, interim, error, activeTarget, supported };
+  return { start, stop, isListening, interim, error, activeTarget, supported, elapsedMs, maxDurationMs: MAX_RECORDING_MS };
 }
 
 // First word capitalized short label pulled from a spoken transcript, used as
@@ -181,8 +215,9 @@ function titleFromTranscript(text) {
   return text.trim().split(/\s+/).length > 6 ? capped + "\u2026" : capped;
 }
 
-// Shared recording widget: idle (tap to start) -> listening (live transcript
-// + stop) -> the caller then owns the "captured" state and shows the result.
+// Shared recording widget: idle (tap to start) -> listening (live transcript,
+// countdown, stop) -> the caller then owns the "captured" state and shows the
+// (editable) result. Recording auto-stops at MAX_RECORDING_MS.
 function VoiceRecorder({ engine, target, onResult, background }) {
   const isThis = engine.activeTarget === target;
   const isListening = isThis && engine.isListening;
@@ -196,19 +231,33 @@ function VoiceRecorder({ engine, target, onResult, background }) {
   }
 
   if (isListening) {
+    const remaining = Math.max(0, engine.maxDurationMs - engine.elapsedMs);
+    const nearLimit = remaining < 10000;
+    const pct = Math.min(100, (engine.elapsedMs / engine.maxDurationMs) * 100);
     return (
-      <div className="rounded-lg p-3 flex items-center gap-3" style={{ background: background || PAPER }}>
-        <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 animate-pulse" style={{ background: CLAY }}>
-          <Mic size={14} color="#fff" />
+      <div className="rounded-lg p-3" style={{ background: background || PAPER }}>
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 animate-pulse" style={{ background: CLAY }}>
+            <Mic size={14} color="#fff" />
+          </div>
+          <p className="flex-1 min-w-0 text-xs opacity-70 truncate">{engine.interim || "Listening\u2026"}</p>
+          <span className="font-mono text-[10px] shrink-0" style={{ color: nearLimit ? CLAY : INK, opacity: nearLimit ? 1 : 0.5 }}>
+            {formatMMSS(engine.elapsedMs)} / {formatMMSS(engine.maxDurationMs)}
+          </span>
+          <button
+            onClick={() => engine.stop()}
+            className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-full shrink-0"
+            style={{ background: MOSS, color: "#fff" }}
+          >
+            <Sparkles size={11} /> Stop &amp; fill in
+          </button>
         </div>
-        <p className="flex-1 min-w-0 text-xs opacity-70 truncate">{engine.interim || "Listening\u2026"}</p>
-        <button
-          onClick={() => engine.stop()}
-          className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-full shrink-0"
-          style={{ background: MOSS, color: "#fff" }}
-        >
-          <Sparkles size={11} /> Stop &amp; fill in
-        </button>
+        <div className="h-1 rounded-full mt-2 overflow-hidden" style={{ background: SAND }}>
+          <div className="h-full" style={{ width: `${pct}%`, background: nearLimit ? CLAY : MOSS, transition: "width 0.2s linear" }} />
+        </div>
+        {nearLimit && (
+          <p className="text-[10px] mt-1" style={{ color: CLAY }}>Recording will stop automatically at 1:00.</p>
+        )}
       </div>
     );
   }
@@ -224,7 +273,7 @@ function VoiceRecorder({ engine, target, onResult, background }) {
         >
           <Mic size={14} color="#fff" />
         </button>
-        <p className="flex-1 min-w-0 text-xs opacity-60">Tap the mic to start speaking</p>
+        <p className="flex-1 min-w-0 text-xs opacity-60">Tap the mic to start speaking — up to 1 minute</p>
       </div>
       {engine.error && <p className="text-xs mt-1.5" style={{ color: CLAY }}>{engine.error}</p>}
     </div>
@@ -908,9 +957,15 @@ function Afterglow() {
                   />
                 ) : (
                   <div>
-                    <div className="font-mono text-xs leading-relaxed p-4 rounded-lg" style={{ background: PAPER }}>
-                      {captureTranscript || "No speech was detected \u2014 try recording again, or type it in instead."}
-                    </div>
+                    <p className="text-xs opacity-60 mb-1.5">Edit anything the transcript got wrong:</p>
+                    <textarea
+                      value={captureTranscript}
+                      onChange={(e) => setCaptureTranscript(e.target.value)}
+                      rows={4}
+                      placeholder="No speech was detected — type it in instead."
+                      className="w-full font-mono text-xs leading-relaxed p-4 rounded-lg outline-none resize-none"
+                      style={{ background: PAPER, border: `1px solid ${SAND}` }}
+                    />
                     <button
                       onClick={() => { setTranscribed(false); setCaptureTranscript(""); }}
                       className="mt-3 text-xs font-medium px-3 py-1.5 rounded-full flex items-center gap-1.5"
@@ -1015,9 +1070,15 @@ function Afterglow() {
                         />
                       ) : (
                         <div>
-                          <div className="font-mono text-xs leading-relaxed p-4 rounded-lg" style={{ background: PAPER }}>
-                            {cardVoiceTranscript || "No speech was detected \u2014 try recording again, or type it in instead."}
-                          </div>
+                          <p className="text-xs opacity-60 mb-1.5">Edit anything the transcript got wrong:</p>
+                          <textarea
+                            value={cardVoiceTranscript}
+                            onChange={(e) => setCardVoiceTranscript(e.target.value)}
+                            rows={4}
+                            placeholder="No speech was detected — type it in instead."
+                            className="w-full font-mono text-xs leading-relaxed p-4 rounded-lg outline-none resize-none"
+                            style={{ background: PAPER, border: `1px solid ${SAND}` }}
+                          />
                           <button
                             onClick={() => { setCardVoiceCaptured(false); setCardVoiceTranscript(""); }}
                             className="mt-3 text-xs font-medium px-3 py-1.5 rounded-full flex items-center gap-1.5"
